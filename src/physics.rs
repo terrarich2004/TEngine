@@ -1,3 +1,4 @@
+// src/physics.rs
 use glam::Vec3;
 
 #[derive(Clone, Copy, Debug)]
@@ -90,12 +91,16 @@ pub struct RigidBody {
 }
 
 impl RigidBody {
-    pub fn new(position: Vec3, half_extents: Vec3, mass: f32, is_kinematic: bool) -> Self {
+    /// Создает физическое тело. Принимает ПОЛНЫЙ габаритный размер `size: Vec3`
+    pub fn new(position: Vec3, size: Vec3, mass: f32, is_kinematic: bool) -> Self {
         let inv_mass = if is_kinematic || mass <= 0.0 {
             0.0
         } else {
             1.0 / mass
         };
+
+        // Делим полный размер на 2 для перевода в half_extents
+        let half_extents = size * 0.5;
         let aabb = AABB::new(position, half_extents);
 
         Self {
@@ -107,9 +112,14 @@ impl RigidBody {
             aabb,
             is_kinematic,
             is_grounded: false,
-            friction: 0.5,    // Коэффициент трения
-            restitution: 0.2, // Упругость отскока
+            friction: 0.5,
+            restitution: 0.2,
         }
+    }
+
+    /// Возвращает полный размер AABB для отрисовки
+    pub fn size(&self) -> Vec3 {
+        self.half_extents * 2.0
     }
 
     pub fn apply_impulse(&mut self, impulse: Vec3) {
@@ -138,6 +148,14 @@ pub struct PhysicsWorld {
 }
 
 impl PhysicsWorld {
+    pub fn get_body(&self, id: usize) -> Option<&RigidBody> {
+        self.bodies.get(id)
+    }
+
+    pub fn get_body_mut(&mut self, id: usize) -> Option<&mut RigidBody> {
+        self.bodies.get_mut(id)
+    }
+
     pub fn new() -> Self {
         Self {
             bodies: Vec::new(),
@@ -167,15 +185,12 @@ impl PhysicsWorld {
 
         for body in self.bodies.iter_mut() {
             if !body.is_kinematic {
-                // Применяем гравитацию
                 body.velocity += self.gravity * dt;
 
-                // 1. Линейное затухание (сопротивление среды/воздуха)
                 let damping = (1.0 - 1.5 * dt).max(0.0);
                 body.velocity.x *= damping;
                 body.velocity.z *= damping;
 
-                // 2. Порог покоя: если объект на полу и движется очень медленно — останавливаем полностью
                 if body.is_grounded && body.velocity.length_squared() < 0.005 {
                     body.velocity.x = 0.0;
                     body.velocity.z = 0.0;
@@ -222,7 +237,6 @@ impl PhysicsWorld {
 
             let normal = mtv.normalize_or_zero();
 
-            // Коррекция позиции (разделение объектов)
             let correction = mtv;
             if !body_a.is_kinematic {
                 body_a.position += correction * (body_a.inv_mass / total_inv_mass);
@@ -233,7 +247,6 @@ impl PhysicsWorld {
                 body_b.aabb = AABB::new(body_b.position, body_b.half_extents);
             }
 
-            // Фиксация касания пола
             if normal.y > 0.7 && !body_a.is_kinematic {
                 body_a.is_grounded = true;
             }
@@ -241,12 +254,10 @@ impl PhysicsWorld {
                 body_b.is_grounded = true;
             }
 
-            // Относительная скорость
             let relative_velocity = body_a.velocity - body_b.velocity;
             let vel_along_normal = relative_velocity.dot(normal);
 
             if vel_along_normal < 0.0 {
-                // 1. Нормальный импульс (Отскок)
                 let e = body_a.restitution.min(body_b.restitution);
                 let j_normal = -(1.0 + e) * vel_along_normal / total_inv_mass;
                 let normal_impulse = normal * j_normal;
@@ -258,7 +269,6 @@ impl PhysicsWorld {
                     body_b.velocity -= normal_impulse * body_b.inv_mass;
                 }
 
-                // 2. Тангенциальный импульс (Трение по закону Кулона)
                 let updated_rel_vel = body_a.velocity - body_b.velocity;
                 let tangent = updated_rel_vel - normal * updated_rel_vel.dot(normal);
                 let tangent_len = tangent.length();
@@ -267,7 +277,6 @@ impl PhysicsWorld {
                     let tangent_dir = tangent / tangent_len;
                     let friction_coef = (body_a.friction * body_b.friction).sqrt();
 
-                    // Ограничиваем трение максимальной силой Кулона: F_fric <= mu * N
                     let j_friction = (-tangent_len / total_inv_mass).max(-friction_coef * j_normal);
                     let friction_impulse = tangent_dir * j_friction;
 

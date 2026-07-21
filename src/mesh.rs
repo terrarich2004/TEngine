@@ -1,120 +1,183 @@
+// src/mesh.rs
 use gl::types::*;
-use std::mem;
-use std::ptr;
+use glam::Vec3;
+use std::fs;
+use std::path::Path;
 
 pub struct Mesh {
-    pub vao: GLuint,
-    pub vbo: GLuint,
-    pub ebo: GLuint,
-    pub index_count: i32,
+    pub vao: u32,
+    pub vbo: u32,
+    pub vertex_count: i32,
 }
 
 impl Mesh {
-    pub fn new(vertices: &[f32], indices: &[u32]) -> Self {
+    /// Создает сетку из чередующегося массива данных:
+    /// [x, y, z, nx, ny, nz, u, v]
+    pub fn new_interleaved(vertices: &[f32], count: i32) -> Self {
         let mut vao = 0;
         let mut vbo = 0;
-        let mut ebo = 0;
 
         unsafe {
             gl::GenVertexArrays(1, &mut vao);
             gl::GenBuffers(1, &mut vbo);
-            gl::GenBuffers(1, &mut ebo);
 
             gl::BindVertexArray(vao);
-
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+
             gl::BufferData(
                 gl::ARRAY_BUFFER,
-                (vertices.len() * mem::size_of::<f32>()) as GLsizeiptr,
+                (vertices.len() * std::mem::size_of::<f32>()) as GLsizeiptr,
                 vertices.as_ptr() as *const _,
                 gl::STATIC_DRAW,
             );
 
-            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
-            gl::BufferData(
-                gl::ELEMENT_ARRAY_BUFFER,
-                (indices.len() * mem::size_of::<u32>()) as GLsizeiptr,
-                indices.as_ptr() as *const _,
-                gl::STATIC_DRAW,
-            );
+            let stride = (8 * std::mem::size_of::<f32>()) as GLsizei;
 
-            let stride = (6 * mem::size_of::<f32>()) as GLsizei;
-            gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, ptr::null());
+            // 0: Position
             gl::EnableVertexAttribArray(0);
+            gl::VertexAttribPointer(0, 3, gl::FLOAT, gl::FALSE, stride, std::ptr::null());
 
+            // 1: Normal
+            gl::EnableVertexAttribArray(1);
             gl::VertexAttribPointer(
                 1,
                 3,
                 gl::FLOAT,
                 gl::FALSE,
                 stride,
-                (3 * mem::size_of::<f32>()) as *const std::ffi::c_void,
+                (3 * std::mem::size_of::<f32>()) as *const _,
             );
-            gl::EnableVertexAttribArray(1);
 
+            // 2: TexCoord
+            gl::EnableVertexAttribArray(2);
+            gl::VertexAttribPointer(
+                2,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                stride,
+                (6 * std::mem::size_of::<f32>()) as *const _,
+            );
+
+            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
             gl::BindVertexArray(0);
         }
 
         Self {
             vao,
             vbo,
-            ebo,
-            index_count: indices.len() as i32,
+            vertex_count: count,
         }
     }
 
-    pub fn create_cube() -> Self {
-        #[rustfmt::skip]
-        let vertices: [f32; 144] = [
-            // Pos (3)           // Normal (3)
-            -1.0, -1.0, -1.0,   0.0,  0.0, -1.0,
-             1.0, -1.0, -1.0,   0.0,  0.0, -1.0,
-             1.0,  1.0, -1.0,   0.0,  0.0, -1.0,
-            -1.0,  1.0, -1.0,   0.0,  0.0, -1.0,
+    /// Загружает .obj файл, центрирует геометрию и автоматически рассчитывает габариты AABB коллизии.
+    pub fn load_obj<P: AsRef<Path>>(path: P) -> Result<(Self, Vec3), String> {
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Ошибка чтения файла {:?}: {}", path.as_ref(), e))?;
 
-            -1.0, -1.0,  1.0,   0.0,  0.0,  1.0,
-             1.0, -1.0,  1.0,   0.0,  0.0,  1.0,
-             1.0,  1.0,  1.0,   0.0,  0.0,  1.0,
-            -1.0,  1.0,  1.0,   0.0,  0.0,  1.0,
+        let mut positions: Vec<Vec3> = Vec::new();
+        let mut normals: Vec<Vec3> = Vec::new();
+        let mut tex_coords: Vec<[f32; 2]> = Vec::new();
 
-            -1.0,  1.0,  1.0,  -1.0,  0.0,  0.0,
-            -1.0,  1.0, -1.0,  -1.0,  0.0,  0.0,
-            -1.0, -1.0, -1.0,  -1.0,  0.0,  0.0,
-            -1.0, -1.0,  1.0,  -1.0,  0.0,  0.0,
+        let mut min_p = Vec3::splat(f32::INFINITY);
+        let mut max_p = Vec3::splat(f32::NEG_INFINITY);
 
-             1.0,  1.0,  1.0,   1.0,  0.0,  0.0,
-             1.0,  1.0, -1.0,   1.0,  0.0,  0.0,
-             1.0, -1.0, -1.0,   1.0,  0.0,  0.0,
-             1.0, -1.0,  1.0,   1.0,  0.0,  0.0,
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
 
-            -1.0, -1.0, -1.0,   0.0, -1.0,  0.0,
-             1.0, -1.0, -1.0,   0.0, -1.0,  0.0,
-             1.0, -1.0,  1.0,   0.0, -1.0,  0.0,
-            -1.0, -1.0,  1.0,   0.0, -1.0,  0.0,
+            let mut parts = line.split_whitespace();
+            let prefix = match parts.next() {
+                Some(p) => p,
+                None => continue,
+            };
 
-            -1.0,  1.0, -1.0,   0.0,  1.0,  0.0,
-             1.0,  1.0, -1.0,   0.0,  1.0,  0.0,
-             1.0,  1.0,  1.0,   0.0,  1.0,  0.0,
-            -1.0,  1.0,  1.0,   0.0,  1.0,  0.0,
-        ];
+            match prefix {
+                "v" => {
+                    let x: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    let y: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    let z: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    let pos = Vec3::new(x, y, z);
+                    min_p = min_p.min(pos);
+                    max_p = max_p.max(pos);
+                    positions.push(pos);
+                }
+                "vn" => {
+                    let x: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    let y: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    let z: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    normals.push(Vec3::new(x, y, z));
+                }
+                "vt" => {
+                    let u: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    let v: f32 = parts.next().unwrap_or("0").parse().unwrap_or(0.0);
+                    tex_coords.push([u, v]);
+                }
+                _ => {}
+            }
+        }
 
-        #[rustfmt::skip]
-        let indices: [u32; 36] = [
-             0,  2,  1,  0,  3,  2,
-             4,  5,  6,  4,  6,  7,
-             8,  9, 10,  8, 10, 11,
-            12, 14, 13, 12, 15, 14,
-            16, 17, 18, 16, 18, 19,
-            20, 22, 21, 20, 23, 22,
-        ];
+        if positions.is_empty() {
+            return Err("Файл OBJ не содержит вершин".into());
+        }
 
-        Self::new(&vertices, &indices)
+        // Точный размер AABB коллайдера
+        let size = max_p - min_p;
+        // Центр AABB для центрирования сетки относительно физического тела
+        let center = (min_p + max_p) * 0.5;
+
+        let mut interleaved_data: Vec<f32> = Vec::new();
+
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.starts_with("f ") {
+                continue;
+            }
+
+            let tokens: Vec<&str> = line.split_whitespace().skip(1).collect();
+            if tokens.len() < 3 {
+                continue;
+            }
+
+            let mut face_indices = Vec::new();
+            for token in tokens {
+                let parts: Vec<&str> = token.split('/').collect();
+                let v_idx = parts.get(0).and_then(|s| s.parse::<usize>().ok()).unwrap_or(1) - 1;
+                let vt_idx = parts.get(1).and_then(|s| s.parse::<usize>().ok()).map(|i| i - 1);
+                let vn_idx = parts.get(2).and_then(|s| s.parse::<usize>().ok()).map(|i| i - 1);
+                face_indices.push((v_idx, vt_idx, vn_idx));
+            }
+
+            // Безопасная триангуляция для многоугольников (N-gons)
+            for i in 1..face_indices.len() - 1 {
+                let tri = [face_indices[0], face_indices[i], face_indices[i + 1]];
+                for (v_idx, vt_idx, vn_idx) in tri {
+                    // Центрируем вершину относительно центра AABB
+                    let pos = positions.get(v_idx).copied().unwrap_or(Vec3::ZERO) - center;
+                    let norm = vn_idx.and_then(|idx| normals.get(idx)).copied().unwrap_or(Vec3::Y);
+                    let uv = vt_idx.and_then(|idx| tex_coords.get(idx)).copied().unwrap_or([0.0, 0.0]);
+
+                    interleaved_data.extend_from_slice(&[
+                        pos.x, pos.y, pos.z,
+                        norm.x, norm.y, norm.z,
+                        uv[0], uv[1],
+                    ]);
+                }
+            }
+        }
+
+        let vertex_count = (interleaved_data.len() / 8) as i32;
+        let mesh = Self::new_interleaved(&interleaved_data, vertex_count);
+
+        Ok((mesh, size))
     }
 
     pub fn draw(&self) {
         unsafe {
             gl::BindVertexArray(self.vao);
-            gl::DrawElements(gl::TRIANGLES, self.index_count, gl::UNSIGNED_INT, ptr::null());
+            gl::DrawArrays(gl::TRIANGLES, 0, self.vertex_count);
             gl::BindVertexArray(0);
         }
     }
@@ -125,7 +188,6 @@ impl Drop for Mesh {
         unsafe {
             gl::DeleteVertexArrays(1, &self.vao);
             gl::DeleteBuffers(1, &self.vbo);
-            gl::DeleteBuffers(1, &self.ebo);
         }
     }
 }
