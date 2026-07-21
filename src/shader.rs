@@ -1,25 +1,85 @@
 use gl::types::*;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use std::ffi::CString;
+use std::fs;
 use std::ptr;
 use std::str;
 
 pub struct Shader {
-    pub id: u32,
+    pub id: GLuint,
 }
 
+// Встроенный вертекстный шейдер по умолчанию (если файл на диске не найден)
+const DEFAULT_VERTEX_SHADER: &str = r#"
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+
+out vec3 FragPos;
+out vec3 Normal;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+void main() {
+    FragPos = vec3(model * vec4(aPos, 1.0));
+    Normal = mat3(transpose(inverse(model))) * aNormal;
+    gl_Position = projection * view * vec4(FragPos, 1.0);
+}
+"#;
+
+// Встроенный фрагментный шейдер по умолчанию
+const DEFAULT_FRAGMENT_SHADER: &str = r#"
+#version 330 core
+out vec4 FragColor;
+
+in vec3 FragPos;
+in vec3 Normal;
+
+uniform vec3 objectColor;
+
+void main() {
+    vec3 norm = normalize(Normal);
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
+    float diff = max(dot(norm, lightDir), 0.2);
+    vec3 result = objectColor * diff;
+    FragColor = vec4(result, 1.0);
+}
+"#;
+
 impl Shader {
-    pub fn new(vertex_code: &str, fragment_code: &str) -> Self {
-        let vs = Self::compile_shader(gl::VERTEX_SHADER, vertex_code);
-        let fs = Self::compile_shader(gl::FRAGMENT_SHADER, fragment_code);
-        let id = Self::link_program(vs, fs);
+    pub fn new(vertex_path: &str, fragment_path: &str) -> Self {
+        let vertex_code = fs::read_to_string(vertex_path)
+            .unwrap_or_else(|_| DEFAULT_VERTEX_SHADER.to_string());
+        let fragment_code = fs::read_to_string(fragment_path)
+            .unwrap_or_else(|_| DEFAULT_FRAGMENT_SHADER.to_string());
+
+        let c_vertex_code = CString::new(vertex_code.as_bytes()).unwrap();
+        let c_fragment_code = CString::new(fragment_code.as_bytes()).unwrap();
 
         unsafe {
-            gl::DeleteShader(vs);
-            gl::DeleteShader(fs);
-        }
+            let vertex = gl::CreateShader(gl::VERTEX_SHADER);
+            gl::ShaderSource(vertex, 1, &c_vertex_code.as_ptr(), ptr::null());
+            gl::CompileShader(vertex);
+            Self::check_compile_errors(vertex, "VERTEX");
 
-        Self { id }
+            let fragment = gl::CreateShader(gl::FRAGMENT_SHADER);
+            gl::ShaderSource(fragment, 1, &c_fragment_code.as_ptr(), ptr::null());
+            gl::CompileShader(fragment);
+            Self::check_compile_errors(fragment, "FRAGMENT");
+
+            let id = gl::CreateProgram();
+            gl::AttachShader(id, vertex);
+            gl::AttachShader(id, fragment);
+            gl::LinkProgram(id);
+            Self::check_compile_errors(id, "PROGRAM");
+
+            gl::DeleteShader(vertex);
+            gl::DeleteShader(fragment);
+
+            Self { id }
+        }
     }
 
     pub fn use_program(&self) {
@@ -29,50 +89,57 @@ impl Shader {
     }
 
     pub fn set_mat4(&self, name: &str, mat: &Mat4) {
+        let c_name = CString::new(name).unwrap();
         unsafe {
-            let c_name = CString::new(name).unwrap();
-            let loc = gl::GetUniformLocation(self.id, c_name.as_ptr());
-            gl::UniformMatrix4fv(loc, 1, gl::FALSE, mat.to_cols_array().as_ptr());
+            let location = gl::GetUniformLocation(self.id, c_name.as_ptr());
+            gl::UniformMatrix4fv(location, 1, gl::FALSE, mat.to_cols_array().as_ptr());
         }
     }
 
-    fn compile_shader(shader_type: GLenum, source: &str) -> u32 {
+    pub fn set_vec3(&self, name: &str, value: Vec3) {
+        let c_name = CString::new(name).unwrap();
         unsafe {
-            let shader = gl::CreateShader(shader_type);
-            let c_str = CString::new(source.as_bytes()).unwrap();
-            gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null());
-            gl::CompileShader(shader);
-
-            let mut success = gl::FALSE as GLint;
-            gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
-            if success != gl::TRUE as GLint {
-                let mut len = 0;
-                gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut len);
-                let mut buffer = vec![0u8; len as usize];
-                gl::GetShaderInfoLog(shader, len, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8);
-                panic!("Ошибка компиляции шейдера: {}", String::from_utf8_lossy(&buffer));
-            }
-            shader
+            let location = gl::GetUniformLocation(self.id, c_name.as_ptr());
+            gl::Uniform3f(location, value.x, value.y, value.z);
         }
     }
 
-    fn link_program(vs: u32, fs: u32) -> u32 {
+    unsafe fn check_compile_errors(shader: GLuint, shader_type: &str) {
         unsafe {
-            let program = gl::CreateProgram();
-            gl::AttachShader(program, vs);
-            gl::AttachShader(program, fs);
-            gl::LinkProgram(program);
+            let mut success: GLint = 0;
+            let mut info_log = vec![0u8; 1024];
 
-            let mut success = gl::FALSE as GLint;
-            gl::GetProgramiv(program, gl::LINK_STATUS, &mut success);
-            if success != gl::TRUE as GLint {
-                let mut len = 0;
-                gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut len);
-                let mut buffer = vec![0u8; len as usize];
-                gl::GetProgramInfoLog(program, len, ptr::null_mut(), buffer.as_mut_ptr() as *mut i8);
-                panic!("Ошибка линковки программы шейдеров: {}", String::from_utf8_lossy(&buffer));
+            if shader_type != "PROGRAM" {
+                gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
+                if success == 0 {
+                    gl::GetShaderInfoLog(
+                        shader,
+                        1024,
+                        ptr::null_mut(),
+                        info_log.as_mut_ptr() as *mut GLchar,
+                    );
+                    println!(
+                        "ERROR::SHADER_COMPILATION_ERROR of type: {}\n{}",
+                        shader_type,
+                        str::from_utf8(&info_log).unwrap_or("Unknown UTF-8 error")
+                    );
+                }
+            } else {
+                gl::GetProgramiv(shader, gl::LINK_STATUS, &mut success);
+                if success == 0 {
+                    gl::GetProgramInfoLog(
+                        shader,
+                        1024,
+                        ptr::null_mut(),
+                        info_log.as_mut_ptr() as *mut GLchar,
+                    );
+                    println!(
+                        "ERROR::PROGRAM_LINKING_ERROR of type: {}\n{}",
+                        shader_type,
+                        str::from_utf8(&info_log).unwrap_or("Unknown UTF-8 error")
+                    );
+                }
             }
-            program
         }
     }
 }

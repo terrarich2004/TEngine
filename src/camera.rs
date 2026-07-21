@@ -9,8 +9,8 @@ pub struct Camera {
 
     pub yaw: f32,
     pub pitch: f32,
-    pub sensitivity: f32,
-    pub fov: f32,
+    pub mouse_sensitivity: f32,
+    pub zoom: f32,
 }
 
 impl Camera {
@@ -18,15 +18,15 @@ impl Camera {
         let mut camera = Self {
             position,
             front: Vec3::new(0.0, 0.0, -1.0),
-            up: Vec3::Y,
-            right: Vec3::X,
+            up: Vec3::ZERO,
+            right: Vec3::ZERO,
             world_up: Vec3::Y,
             yaw: -90.0,
             pitch: 0.0,
-            sensitivity: 0.1,
-            fov: 45.0,
+            mouse_sensitivity: 0.1,
+            zoom: 45.0,
         };
-        camera.update_vectors();
+        camera.update_camera_vectors();
         camera
     }
 
@@ -34,29 +34,21 @@ impl Camera {
         Mat4::look_at_rh(self.position, self.position + self.front, self.up)
     }
 
-    pub fn get_projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        Mat4::perspective_rh_gl(self.fov.to_radians(), aspect_ratio, 0.1, 100.0)
+    pub fn process_mouse_movement(&mut self, mut xoffset: f32, mut yoffset: f32, constrain_pitch: bool) {
+        xoffset *= self.mouse_sensitivity;
+        yoffset *= self.mouse_sensitivity;
+
+        self.yaw += xoffset;
+        self.pitch += yoffset;
+
+        if constrain_pitch {
+            self.pitch = self.pitch.clamp(-89.0, 89.0);
+        }
+
+        self.update_camera_vectors();
     }
 
-    pub fn process_mouse(&mut self, mut x_offset: f32, mut y_offset: f32) {
-        x_offset *= self.sensitivity;
-        y_offset *= self.sensitivity;
-
-        self.yaw += x_offset;
-        self.pitch += y_offset;
-        self.pitch = self.pitch.clamp(-89.0, 89.0);
-
-        self.update_vectors();
-    }
-
-    // Возвращает вектор движения по горизонтали (XZ плоская проекция)
-    pub fn get_move_vectors(&self) -> (Vec3, Vec3) {
-        let front_xz = Vec3::new(self.front.x, 0.0, self.front.z).normalize_or_zero();
-        let right_xz = Vec3::new(self.right.x, 0.0, self.right.z).normalize_or_zero();
-        (front_xz, right_xz)
-    }
-
-    fn update_vectors(&mut self) {
+    pub fn update_camera_vectors(&mut self) {
         let front = Vec3::new(
             self.yaw.to_radians().cos() * self.pitch.to_radians().cos(),
             self.pitch.to_radians().sin(),
