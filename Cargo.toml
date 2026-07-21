@@ -1,0 +1,9 @@
+[package]
+name = "MEngine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glfw = "0.55"
+gl = "0.14"
+glam = "0.28" # Быстрая математика для матриц/векторов
